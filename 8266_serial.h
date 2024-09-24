@@ -1,76 +1,35 @@
-// Timeout for Serial Requests
-#define TIMEOUT 10000 // mS
-
-boolean echoFind(String keyword){
- byte current_char = 0;
- byte keyword_length = keyword.length();
- long deadline = millis() + TIMEOUT;
- while(millis() < deadline){
-  if (Serial2.available()){
-    char ch = Serial2.read();
-    Serial.write(ch);
-    if (ch == keyword[current_char])
-      if (++current_char == keyword_length){
-       return true;
-    }
-   }
-  }
- return false; // Timed out
-}
-
-boolean find(String keyword){
- byte current_char = 0;
- byte keyword_length = keyword.length();
- long deadline = millis() + TIMEOUT;
- while(millis() < deadline){
-  if (Serial2.available()){
-    char ch = Serial2.read();
-    if (ch == keyword[current_char]) {
-      if (++current_char == keyword_length){
-        return true;
-      }
-    } else {
-      current_char = 0; // If the next character isn't correct, reset to the beginning
-    }
-  }
- }
- return false;
-}
-
-boolean SendCommand(String cmd, String ack){
-  Serial2.println(cmd); // Send "AT+" command to module
-  if (echoFind(ack)) { // timed out waiting for ack string
-    return true; // ack blank or ack found
-  } else {
-    return false;
-  }
-}
-
-boolean SendCommandSilent(String cmd, String ack){
-  Serial2.println(cmd); // Send "AT+" command to module
-  if (find(ack)) { // timed out waiting for ack string
-    return true; // ack blank or ack found
-  } else {
-    return false;
-  }
-}
-
-#define ESP01_RX 5
-#define ESP01_TX 4
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <ESP8266HTTPClient.h>
 
 void initializeWifi() {
-    // Setup the UART we use to communicate with the ESP01
-  Serial2.setRX(ESP01_RX);
-  Serial2.setTX(ESP01_TX);
-  Serial2.begin(115200);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_USERNAME, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
 
-  Serial2.println(""); // For some reason, there is some weird stuff sent on Serial2. This flushes it.
-  SendCommandSilent("AT+CWMODE=1","OK"); // Set the 8266 into the corect wifi mode
-  SendCommandSilent("AT+CWAUTOCONN=0","OK"); // Make it so that the access point doesn't automatically connect
-  SendCommandSilent("AT+CWJAP=\"" + WIFI_USERNAME + "\",\"" + WIFI_PASSWORD + "\"","OK");  // Connect to WIFI
-  SendCommandSilent("AT+CIPSNTPCFG=1,8,\"time.google.com\",\"time2.google.com\",\"time3.google.com\"", "OK"); // Sync with Google SNTP
-  delay(100); // Seems to be necessary for the SNTP time to be set correctly
-  SendCommandSilent("AT+CIPSSLCCONF=0", "OK");
+  Serial.print("Connected, IP address: ");
+  Serial.println(WiFi.localIP());
+
+  // Set time via NTP, as required for x.509 validation
+  configTime(3 * 3600, 0, "time.google.com", "time2.google.com");
+
+  Serial.print("Waiting for NTP time sync: ");
+  time_t now = time(nullptr);
+  while (now < 8 * 3600 * 2) {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println("");
+  struct tm timeinfo;
+  gmtime_r(&now, &timeinfo);
+  Serial.print("Current time: ");
+  Serial.println(asctime(&timeinfo));
 }
 
 // This function is needed because weird characters are showing up before and after the JSON from the Google API Responses.
@@ -87,6 +46,7 @@ struct ResponseHeader {
 };
 
 struct Response {
+  bool connected = false;
   String version;
   String statusCode;
   String statusMessage;
@@ -102,103 +62,24 @@ struct Request {
   String bearerToken;
 };
 
-const int NO_MODE = 0;
-const int IPD = 1;
-const int IN_DATA = 2;
-const int READING_LENGTH = 3;
-const int CLOSE = 4;
-
-void GetTCPResponses(std::vector<String> &responses) {
-  byte current_char = 0;
-
-  int mode = NO_MODE;
-
-  const String closed = "CLOSED";
-  const byte closed_length = closed.length();
-  
-  const String ipd = "+IPD,";
-  const byte ipd_length = ipd.length();
-
-  int data_len = 0;
-  String data_len_str;
-  String current_response;
-
-  long deadline = millis() + TIMEOUT;
-  while(millis() < deadline){
-    if (Serial2.available()){
-      char ch = Serial2.read();
-      switch (mode) {
-      case IPD:
-        if (ch == ipd[current_char]) {
-          if (++current_char == ipd_length) {
-            current_char = 0;
-
-            mode = READING_LENGTH;
-            data_len_str = "";
-          }
-        } else {
-          mode = NO_MODE;
-          current_char = 0;
-        }
-        break;
-      case CLOSE:
-        if (ch == closed[current_char]) {
-          if (++current_char == closed_length) {
-            return;
-          }
-        } else {
-          mode = NO_MODE;
-          current_char = 0;
-        }
-        break;
-      case READING_LENGTH:
-        if (ch == ':') {
-          mode = IN_DATA;
-          data_len = data_len_str.toInt();
-          current_response = "";
-        } else {
-          data_len_str += ch;
-        }
-        break;
-      case IN_DATA:
-        current_response += ch;
-        data_len--;
-        if (data_len == 0) {
-          mode = NO_MODE;
-          responses.push_back(current_response);
-        }
-        break;
-      default:
-        // Check to see if we are starting either IPD or CLOSED
-        if (ch == closed[0]) {
-          mode = CLOSE;
-          current_char++;
-        } else if (ch == ipd[0]) {
-          mode = IPD;
-          current_char++;
-        }
-      }
+String SendTCPCommand(WiFiClientSecure &client, String tcpCmd) {
+  client.println(tcpCmd);
+  client.println();
+  String fullResponse = "";
+  client.setTimeout(1000);
+  while (client.connected()) {
+    if (client.available()) {
+      char c = client.read();
+      fullResponse += c;
     }
   }
-}
 
-String SendTCPCommand(String tcpCmd) {
-  String cmdLen = String(tcpCmd.length());
-  boolean succeeded = SendCommandSilent("AT+CIPSEND=" + cmdLen, "OK"); // Send the length of the TCP command
-  if (succeeded) {
-    delay(500);
-    Serial2.println(tcpCmd);
-    std::vector<String> responses = {};
-    GetTCPResponses(responses);
-    String fullResponse = "";
-    for (int i = 0; i < responses.size(); i++) {
-      fullResponse += responses.at(i);
-    }
-    return fullResponse;
-  } else {
-    Serial.println("error opening connection");
-  }
-  return "";
+  Serial.println("");
+  Serial.println("Full Response");
+  Serial.println("-------");
+  Serial.println(fullResponse);
+  Serial.println("-------");
+  return fullResponse;
 }
 
 struct Response FillHeaders(String headerBody) {
@@ -215,7 +96,7 @@ struct Response FillHeaders(String headerBody) {
     // Now, parse out each of the individual headers
     int startPosition = statusLineEnd + 2;
     int endPosition = startPosition;
-    Response response = {version, statusCode, statusMessage, {}};
+    Response response = {true, version, statusCode, statusMessage, {}};
     while (endPosition != -1) {
       endPosition = headerBody.indexOf("\r\n", startPosition);
       if (endPosition != -1) {
@@ -231,6 +112,9 @@ struct Response FillHeaders(String headerBody) {
 }
 
 struct Response httpRequest(Request request){
+  WiFiClientSecure client;
+  client.setInsecure();
+
   Response response;
 
   // These 3 lines convert the URL into a Char buffer
@@ -249,18 +133,28 @@ struct Response httpRequest(Request request){
     String protocol = String(ms.GetCapture(buf, 0));
     String host = String(ms.GetCapture(buf, 1));
     String uri = String(ms.GetCapture(buf, 2));
-    String cipStartPort = "80";
+    int cipStartPort = 80;
     String cipStartProtocol = "TCP";
     if (protocol == "https") {
-      cipStartPort = "443";
+      cipStartPort = 443;
       cipStartProtocol = "SSL";
     }
-    SendCommandSilent("AT+CIPSTART=\"" + cipStartProtocol + "\",\"" + host + "\"," + cipStartPort, "OK");
+    Serial.println(host + " " + String(cipStartPort));
+
+    httpClient.begin(wifiClient, protocol + "://" + host);
+    
+    if (!client.connect(host, uint16_t(cipStartPort))) {
+      Serial.println("connection failed");
+      return response;
+    } else {
+      response.connected = true;
+    };
+
     std::vector<String> requestHeaders = {};
     requestHeaders.push_back("Host: " + host);
     requestHeaders.push_back("User-Agent: esp8266/0.1");
     requestHeaders.push_back("Connection: close");
-    requestHeaders.push_back("Accept-Encoding: br");
+    //requestHeaders.push_back("Accept-Encoding: br");
     if (request.method == "POST") {
       requestHeaders.push_back("Content-length: " + String(request.body.length()));
     }
@@ -278,7 +172,24 @@ struct Response httpRequest(Request request){
     if (request.body) {
       tcpString += request.body;
     }
-    String tcpResponse = SendTCPCommand(tcpString);
+    Serial.println(tcpString);
+    //String tcpResponse = SendTCPCommand(*client, tcpString);
+    client.println(tcpString);
+    client.println();
+    String tcpResponse = "";
+    client.setTimeout(10000);
+    while (client.connected()) {
+      if (client.available()) {
+        char c = client.read();
+        tcpResponse += c;
+      }
+    }
+
+    Serial.println("");
+    Serial.println("Full Response");
+    Serial.println("-------");
+    Serial.println(tcpResponse);
+    Serial.println("-------");
 
     // The headers are separated from the body by 2 CR/NLs
     int doubleReturn = tcpResponse.indexOf("\r\n\r\n");

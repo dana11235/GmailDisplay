@@ -4,11 +4,12 @@
 #include <Regexp.h>
 #include <SPI.h>
 #include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SH110X.h>
+/*#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>*/
 #include "constants.h"
 #include "8266_serial.h"
 
+/*
 // These pins are used for the SPI OLED display
 #define OLED_MOSI 10
 #define OLED_CLK 11
@@ -17,19 +18,20 @@
 
 // Setup the 1106 display
 Adafruit_SH1106G display = Adafruit_SH1106G(128, 64,OLED_MOSI, OLED_CLK, OLED_DC, OLED_RST, -1);
+*/
 
 String accessToken;
 JsonDocument doc;
 DeserializationError error;
 unsigned long expirationTime;
 
-void initializeOled() {
+/*void initializeOled() {
   // Start OLED
   display.begin(0, true);
   display.setContrast(0);
   display.clearDisplay(); // Clear the Adafruit logo ;-)
   display.display();
-}
+}*/
 
 // Syntactic sugar for a GET request
 struct Response httpGetRequest(Request request){
@@ -47,13 +49,15 @@ const String USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 char GMAIL_USER_ID[50]; // This will hold the user's gmail ID once it is set...
 
 void getGmailId() {
-  Response userInfoResponse = httpGetRequest({.url = USERINFO_URL, .bearerToken = accessToken});
-  error = deserializeJson(doc, userInfoResponse.body);
-  if (error) {
-    Serial.print(F("deserializeJson() failed: "));
-    Serial.println(error.f_str());
-  } else {
-    strncpy(GMAIL_USER_ID, doc["id"], sizeof(GMAIL_USER_ID)); // we keep this as a char[] since I want to use sprintf later...
+  Response response = httpGetRequest({.url = USERINFO_URL, .bearerToken = accessToken});
+  if (response.connected) {
+    error = deserializeJson(doc, response.body);
+    if (error) {
+      Serial.print(F("deserializeJson() failed: "));
+      Serial.println(error.f_str());
+    } else {
+      strncpy(GMAIL_USER_ID, doc["id"], sizeof(GMAIL_USER_ID)); // we keep this as a char[] since I want to use sprintf later...
+    }
   }
 }
 
@@ -66,13 +70,15 @@ int getInboxUnreadMessages() {
   char gmailRequestUrl[sizeof(GMAIL_INBOX_REQUEST) + strlen(GMAIL_USER_ID)];
   sprintf(gmailRequestUrl, GMAIL_INBOX_REQUEST, GMAIL_USER_ID);
   String fullGmailRequestUrl = String(gmailRequestUrl) + "?" + GMAIL_INBOX_QUERY;
-  Response inboxResponse = httpGetRequest({.url = fullGmailRequestUrl, .bearerToken = accessToken});
-  error = deserializeJson(doc, inboxResponse.body);
-  if (error) {
-    Serial.print(F("deserializeJson() failed: "));
-    Serial.println(error.f_str());
-  } else {
-    inboxUnreadMessages = doc["resultSizeEstimate"];
+  Response response = httpGetRequest({.url = fullGmailRequestUrl, .bearerToken = accessToken});
+  if (response.connected) {
+    error = deserializeJson(doc, response.body);
+    if (error) {
+      Serial.print(F("deserializeJson() failed: "));
+      Serial.println(error.f_str());
+    } else {
+      inboxUnreadMessages = doc["resultSizeEstimate"];
+    }
   }
   return inboxUnreadMessages;
 }
@@ -83,18 +89,20 @@ void refreshToken() {
   Response response = httpPostRequest(
     {.url = OAUTH_REFRESH_URL, .body = OAUTH_REFRESH_BODY, .contentType = "application/x-www-form-urlencoded"}
   );
-  error = deserializeJson(doc, response.body);
-  if (error) {
-    Serial.print(F("deserializeJson() failed: "));
-    Serial.println(error.f_str());
-  } else {
-    accessToken = String(doc["access_token"]);
-    expirationTime = (millis() / 1000) + long(doc["expires_in"]);
-    Serial.println("Expires at: " + String(expirationTime));
+  if (response.connected) {
+    error = deserializeJson(doc, response.body);
+    if (error) {
+      Serial.print(F("deserializeJson() failed: "));
+      Serial.println(error.f_str());
+    } else {
+      accessToken = String(doc["access_token"]);
+      expirationTime = (millis() / 1000) + long(doc["expires_in"]);
+      Serial.println("Expires at: " + String(expirationTime));
+    }
   }
 }
 
-const int X_OFFSET = 5;
+/*const int X_OFFSET = 5;
 
 void displayToOLED(char header[], char data[]) {
   display.clearDisplay();
@@ -107,7 +115,7 @@ void displayToOLED(char header[], char data[]) {
   display.println(data);
   display.drawLine(X_OFFSET, 12, 65 + X_OFFSET, 12, SH110X_WHITE);
   display.display();
-}
+}*/
 
 // This function writes the number of messages to the SPI OLED
 void outputNumMessages(int numMessages) {
@@ -116,15 +124,15 @@ void outputNumMessages(int numMessages) {
   sprintf(header, "GMail Inbox");
   sprintf(data, "%d", numMessages);
   Serial.println(String(header) + ": " + String(data));
-  displayToOLED(header, data);
+  //displayToOLED(header, data);
 }
 
 void setup() {
   // Initialize the internal serial port
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   // Initialize the display and Wifi
-  initializeOled();
+  //initializeOled();
   initializeWifi();
 }
 
