@@ -1,6 +1,5 @@
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
-#include <ESP8266HTTPClient.h>
 
 void initializeWifi() {
   WiFi.mode(WIFI_STA);
@@ -14,6 +13,7 @@ void initializeWifi() {
 
   Serial.print("Connected, IP address: ");
   Serial.println(WiFi.localIP());
+  ESP.wdtFeed();
 
   // Set time via NTP, as required for x.509 validation
   configTime(3 * 3600, 0, "time.google.com", "time2.google.com");
@@ -30,6 +30,7 @@ void initializeWifi() {
   gmtime_r(&now, &timeinfo);
   Serial.print("Current time: ");
   Serial.println(asctime(&timeinfo));
+  ESP.wdtFeed();
 }
 
 // This function is needed because weird characters are showing up before and after the JSON from the Google API Responses.
@@ -62,23 +63,30 @@ struct Request {
   String bearerToken;
 };
 
-String SendTCPCommand(WiFiClientSecure &client, String tcpCmd) {
+String SendTCPCommand(WiFiClientSecure client, String tcpCmd) {
   client.println(tcpCmd);
   client.println();
   String fullResponse = "";
-  client.setTimeout(1000);
+  
+  int numBytes = -1;
   while (client.connected()) {
-    if (client.available()) {
+    ESP.wdtFeed();
+    numBytes = client.available();
+    for (int i = 0; i < numBytes; i++) {
       char c = client.read();
       fullResponse += c;
     }
   }
 
-  Serial.println("");
-  Serial.println("Full Response");
-  Serial.println("-------");
-  Serial.println(fullResponse);
-  Serial.println("-------");
+  // Even after it disconnects, there can still be some bytes to grab...
+  while (numBytes = client.available() > 0) {
+    ESP.wdtFeed();
+    for (int i = 0; i < numBytes; i++) {
+      char c = client.read();
+      fullResponse += c;
+    }
+  }
+
   return fullResponse;
 }
 
@@ -98,6 +106,7 @@ struct Response FillHeaders(String headerBody) {
     int endPosition = startPosition;
     Response response = {true, version, statusCode, statusMessage, {}};
     while (endPosition != -1) {
+      ESP.wdtFeed();
       endPosition = headerBody.indexOf("\r\n", startPosition);
       if (endPosition != -1) {
         String headerLine = headerBody.substring(startPosition, endPosition);
@@ -114,6 +123,7 @@ struct Response FillHeaders(String headerBody) {
 struct Response httpRequest(Request request){
   WiFiClientSecure client;
   client.setInsecure();
+  ESP.wdtFeed();
 
   Response response;
 
@@ -139,9 +149,7 @@ struct Response httpRequest(Request request){
       cipStartPort = 443;
       cipStartProtocol = "SSL";
     }
-    Serial.println(host + " " + String(cipStartPort));
-
-    httpClient.begin(wifiClient, protocol + "://" + host);
+    ESP.wdtFeed();
     
     if (!client.connect(host, uint16_t(cipStartPort))) {
       Serial.println("connection failed");
@@ -172,24 +180,7 @@ struct Response httpRequest(Request request){
     if (request.body) {
       tcpString += request.body;
     }
-    Serial.println(tcpString);
-    //String tcpResponse = SendTCPCommand(*client, tcpString);
-    client.println(tcpString);
-    client.println();
-    String tcpResponse = "";
-    client.setTimeout(10000);
-    while (client.connected()) {
-      if (client.available()) {
-        char c = client.read();
-        tcpResponse += c;
-      }
-    }
-
-    Serial.println("");
-    Serial.println("Full Response");
-    Serial.println("-------");
-    Serial.println(tcpResponse);
-    Serial.println("-------");
+    String tcpResponse = SendTCPCommand(client, tcpString);
 
     // The headers are separated from the body by 2 CR/NLs
     int doubleReturn = tcpResponse.indexOf("\r\n\r\n");
